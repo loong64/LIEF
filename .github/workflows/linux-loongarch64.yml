@@ -1,0 +1,187 @@
+name: 'Linux LoongArch64'
+on: push
+
+jobs:
+  check:
+    runs-on: ubuntu-slim
+    outputs:
+      build: ${{ steps.check-build.outputs.build }}
+      version: ${{ steps.check-build.outputs.version }}
+    steps:
+      - name: Check Build
+        id: check-build
+        run: |
+          package=lief
+          version=$(curl -sSL "https://pypi.org/pypi/${package}/json" | jq -r '.info.version')
+          if [ -z "${version}" ] || [ "${version}" == "null" ]; then
+            echo "Failed to get version"
+            exit 1
+          fi
+
+          echo "version=${version}" >> $GITHUB_ENV
+          echo "version=${version}" >> $GITHUB_OUTPUT
+          echo ""
+          echo "========== Build Args =========="
+          echo "lief version: ${version}"
+
+          gh release view ${version} -R ${{ github.repository }} | grep lief-.*.whl >/dev/null 2>&1 || echo "build=1" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  linux-sdk:
+    runs-on: ubuntu-latest
+    needs: check
+    if: ${{ needs.check.outputs.build == '1' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: lief-project/LIEF
+          ref: ${{ needs.check.outputs.version }}
+          fetch-depth: 0
+      - name: Get Date
+        id: get-date
+        run: |
+          echo "date=$(/bin/date -u "+%Y-%m-%d-%H;%M;%S")" >> $GITHUB_OUTPUT
+      - name: ccache cache files
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: linux-loongarch64-${{ runner.os }}-sdk-${{ steps.get-date.outputs.date }}
+          restore-keys: |
+              linux-loongarch64-${{ runner.os }}-sdk
+      - name: Prepare build
+        run: |
+          mkdir /tmp/scripts/docker
+          if [ ! -f "/tmp/scripts/docker/linux-sdk-loongarch64" ]; then
+            cp scripts/docker/linux-sdk-aarch64 /tmp/scripts/docker/linux-sdk-loongarch64
+            sed -i 's/aarch64/loongarch64/g' /tmp/scripts/docker/linux-sdk-loongarch64
+          fi
+      - name: Build SDK
+        run: |
+          mkdir -p $RUNNER_TEMP/lief-install
+          mkdir -p $HOME/.ccache
+
+          chmod -R 777 $HOME/.ccache
+
+          docker run --name lief-sdk -u 1001:1001 --rm \
+            -e CCACHE_COMPRESS=1                       \
+            -e CCACHE_MAXSIZE=10.0G                    \
+            -e CCACHE_DIR=/ccache                      \
+            -v $GITHUB_WORKSPACE:/src                  \
+            -v $RUNNER_TEMP/lief-install:/install      \
+            -v $HOME/.ccache:/ccache                   \
+            -v /tmp/scripts/docker:/tmp/scripts/docker \
+            ghcr.io/loong64/liefproject/manylinux_2_38_loongarch64 \
+            bash /tmp/scripts/docker/linux-sdk-loongarch64
+      - name: 'Upload SDK Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-loongarch64-sdk
+          path: build/*.tar.gz
+          retention-days: 3
+      - name: 'Upload Install Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-loongarch64-install
+          path: ${{ runner.temp }}/lief-install
+          retention-days: 1
+  wheels:
+    runs-on: ubuntu-latest
+    needs: [check, linux-sdk]
+    if: ${{ needs.check.outputs.build == '1' }}
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: lief-project/LIEF
+          ref: ${{ needs.check.outputs.version }}
+          fetch-depth: 0
+      - name: Get Date
+        id: get-date
+        run: |
+          echo "date=$(/bin/date -u "+%Y-%m-%d-%H;%M;%S")" >> $GITHUB_OUTPUT
+      - name: ccache cache files
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: linux-loongarch64-${{ runner.os }}-${{ matrix.python-version }}-${{ steps.get-date.outputs.date }}
+          restore-keys: |
+              linux-loongarch64-${{ runner.os }}-${{ matrix.python-version }}
+      - name: Download LIEF install dir
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-loongarch64-install
+          path: ${{ runner.temp }}/lief-install
+      - name: Prepare build
+        run: |
+          if [ ! -f "scripts/docker/linux-py-loongarch64" ]; then
+            cp scripts/docker/linux-py-aarch64 scripts/docker/linux-py-loongarch64
+          fi
+          if [ ! -f "scripts/docker/config/pylinux-loongarch64.toml" ]; then
+            cp scripts/docker/config/pylinux-aarch64.toml scripts/docker/config/pylinux-loongarch64.toml
+          fi
+          sed -i 's/manylinux2014/manylinux_2_38/g' scripts/docker/linux-py-loongarch64 scripts/docker/config/pylinux-loongarch64.toml
+          sed -i 's/aarch64/loongarch64/g' scripts/docker/linux-py-loongarch64 scripts/docker/config/pylinux-loongarch64.toml
+      - name: Python ${{ matrix.python-version }} -- Wheel
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          mkdir -p $HOME/.ccache
+          chmod -R 777 $HOME/.ccache
+
+          PYTHON_VERSION_ALT=$(echo "${PYTHON_VERSION}" | sed 's/\.//') # Transform 3.8 -> 38
+          PYTHON_BINARY="/opt/python/cp${PYTHON_VERSION_ALT}-cp${PYTHON_VERSION_ALT}/bin/python${PYTHON_VERSION}"
+          docker run -u 1001:1001 --rm           \
+           -e CCACHE_COMPRESS=1                  \
+           -e CCACHE_MAXSIZE=10.0G               \
+           -e CCACHE_CPP2=1                      \
+           -e CCACHE_DIR=/ccache                 \
+           -e PYTHON_VERSION=$PYTHON_VERSION_ALT \
+           -e PYTHON_BINARY=$PYTHON_BINARY       \
+           -v $GITHUB_WORKSPACE:/src             \
+           -v $HOME/.ccache:/ccache              \
+           -v $RUNNER_TEMP/lief-install:/install \
+           ghcr.io/loong64/liefproject/manylinux_2_38_loongarch64 \
+           bash /src/scripts/docker/linux-py-loongarch64
+      - name: 'Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-loongarch64-python${{ matrix.python-version }}-wheel
+          path: dist/*.whl
+          retention-days: 3
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ needs.check.outputs.build == '1' }}
+    needs: [check, linux-sdk, wheels]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-loongarch64-*
+          merge-multiple: true
+          path: dist
+      - name: Display artifacts
+        run: ls -R dist
+      - name: Deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ needs.check.outputs.version }}"
+          gh release create "${TAG_NAME}" \
+            --generate-notes \
+            --title "${TAG_NAME}" \
+            dist/*
+      - name: Upload wheels
+        run: |
+          pip install twine==6.0.1
+          for file in dist/*.whl; do
+            twine upload --repository-url https://gitlab.com/api/v4/projects/65746188/packages/pypi $file || true
+          done
+        env:
+          TWINE_USERNAME: ${{ github.repository_owner }}
+          TWINE_PASSWORD: ${{ secrets.GL_TOKEN }}
