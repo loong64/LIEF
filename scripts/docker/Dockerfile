@@ -6,4 +6,6 @@ RUN yum install -y \
         && \
     yum clean all && rm -rf /var/cache/yum/*
 
+WORKDIR /src
 ENV LIEF_DIR=/install/lib64/cmake/LIEF
+ENV PIP_EXTRA_INDEX_URL=https://gitlab.com/api/v4/projects/65746188/packages/pypi/simple

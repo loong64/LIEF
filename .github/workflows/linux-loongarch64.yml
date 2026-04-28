@@ -1,5 +1,14 @@
 name: 'Linux LoongArch64'
-on: push
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        default: 'latest'
+        description: 'Package version'
+        type: string
+        required: true
+  schedule:
+    - cron: '0 17 * * *'
 
 jobs:
   check:
@@ -12,18 +21,17 @@ jobs:
         id: check-build
         run: |
           package=lief
-          version=$(curl -sSL "https://pypi.org/pypi/${package}/json" | jq -r '.info.version')
-          if [ -z "${version}" ] || [ "${version}" == "null" ]; then
-            echo "Failed to get version"
-            exit 1
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            version="latest"
+          else
+            version=${{ github.event.inputs.version }}
           fi
-
+          if [ "$version" = "latest" ]; then
+            version=$(curl -sSL "https://pypi.org/pypi/${package}/json" | jq -r '.info.version')
+          fi
+          echo "Building package: ${package} version: ${version}"
           echo "version=${version}" >> $GITHUB_ENV
           echo "version=${version}" >> $GITHUB_OUTPUT
-          echo ""
-          echo "========== Build Args =========="
-          echo "lief version: ${version}"
-
           gh release view ${version} -R ${{ github.repository }} | grep lief-.*.whl >/dev/null 2>&1 || echo "build=1" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -49,9 +57,11 @@ jobs:
           key: linux-loongarch64-${{ runner.os }}-sdk-${{ steps.get-date.outputs.date }}
           restore-keys: |
               linux-loongarch64-${{ runner.os }}-sdk
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v4
       - name: Prepare build
         run: |
-          mkdir /tmp/scripts/docker
+          mkdir -p /tmp/scripts/docker
           if [ ! -f "/tmp/scripts/docker/linux-sdk-loongarch64" ]; then
             cp scripts/docker/linux-sdk-aarch64 /tmp/scripts/docker/linux-sdk-loongarch64
             sed -i 's/aarch64/loongarch64/g' /tmp/scripts/docker/linux-sdk-loongarch64
@@ -64,6 +74,7 @@ jobs:
           chmod -R 777 $HOME/.ccache
 
           docker run --name lief-sdk -u 1001:1001 --rm \
+            --platform linux/loong64                   \
             -e CCACHE_COMPRESS=1                       \
             -e CCACHE_MAXSIZE=10.0G                    \
             -e CCACHE_DIR=/ccache                      \
@@ -74,13 +85,13 @@ jobs:
             ghcr.io/loong64/liefproject/manylinux_2_38_loongarch64 \
             bash /tmp/scripts/docker/linux-sdk-loongarch64
       - name: 'Upload SDK Artifact'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-loongarch64-sdk
           path: build/*.tar.gz
           retention-days: 3
       - name: 'Upload Install Artifact'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-loongarch64-install
           path: ${{ runner.temp }}/lief-install
@@ -110,10 +121,12 @@ jobs:
           restore-keys: |
               linux-loongarch64-${{ runner.os }}-${{ matrix.python-version }}
       - name: Download LIEF install dir
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linux-loongarch64-install
           path: ${{ runner.temp }}/lief-install
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v4
       - name: Prepare build
         run: |
           if [ ! -f "scripts/docker/linux-py-loongarch64" ]; then
@@ -124,6 +137,7 @@ jobs:
           fi
           sed -i 's/manylinux2014/manylinux_2_38/g' scripts/docker/linux-py-loongarch64 scripts/docker/config/pylinux-loongarch64.toml
           sed -i 's/aarch64/loongarch64/g' scripts/docker/linux-py-loongarch64 scripts/docker/config/pylinux-loongarch64.toml
+          sed -i '/python -m pip install/i \python -m pip install -U pip' scripts/docker/linux-py-loongarch64
       - name: Python ${{ matrix.python-version }} -- Wheel
         env:
           PYTHON_VERSION: ${{ matrix.python-version }}
@@ -134,19 +148,20 @@ jobs:
           PYTHON_VERSION_ALT=$(echo "${PYTHON_VERSION}" | sed 's/\.//') # Transform 3.8 -> 38
           PYTHON_BINARY="/opt/python/cp${PYTHON_VERSION_ALT}-cp${PYTHON_VERSION_ALT}/bin/python${PYTHON_VERSION}"
           docker run -u 1001:1001 --rm           \
-           -e CCACHE_COMPRESS=1                  \
-           -e CCACHE_MAXSIZE=10.0G               \
-           -e CCACHE_CPP2=1                      \
-           -e CCACHE_DIR=/ccache                 \
-           -e PYTHON_VERSION=$PYTHON_VERSION_ALT \
-           -e PYTHON_BINARY=$PYTHON_BINARY       \
-           -v $GITHUB_WORKSPACE:/src             \
-           -v $HOME/.ccache:/ccache              \
-           -v $RUNNER_TEMP/lief-install:/install \
-           ghcr.io/loong64/liefproject/manylinux_2_38_loongarch64 \
-           bash /src/scripts/docker/linux-py-loongarch64
+            --platform linux/loong64                   \
+            -e CCACHE_COMPRESS=1                  \
+            -e CCACHE_MAXSIZE=10.0G               \
+            -e CCACHE_CPP2=1                      \
+            -e CCACHE_DIR=/ccache                 \
+            -e PYTHON_VERSION=$PYTHON_VERSION_ALT \
+            -e PYTHON_BINARY=$PYTHON_BINARY       \
+            -v $GITHUB_WORKSPACE:/src             \
+            -v $HOME/.ccache:/ccache              \
+            -v $RUNNER_TEMP/lief-install:/install \
+            ghcr.io/loong64/liefproject/manylinux_2_38_loongarch64 \
+            bash /src/scripts/docker/linux-py-loongarch64
       - name: 'Artifact'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-loongarch64-python${{ matrix.python-version }}-wheel
           path: dist/*.whl
@@ -160,7 +175,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: linux-loongarch64-*
           merge-multiple: true
@@ -175,7 +190,7 @@ jobs:
           gh release create "${TAG_NAME}" \
             --generate-notes \
             --title "${TAG_NAME}" \
-            dist/*
+            dist/*.tar.gz
       - name: Upload wheels
         run: |
           pip install twine==6.0.1
