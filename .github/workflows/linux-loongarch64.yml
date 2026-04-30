@@ -36,7 +36,7 @@ jobs:
           echo "Building package: ${package} version: ${version}"
           echo "version=${version}" >> $GITHUB_ENV
           echo "version=${version}" >> $GITHUB_OUTPUT
-          gh release view ${version} -R ${{ github.repository }} | grep lief-.*.whl >/dev/null 2>&1 || echo "build=1" >> $GITHUB_OUTPUT
+          gh release view ${version} -R ${{ github.repository }} | grep LIEF-${version}-Linux-loongarch64.tar.gz >/dev/null 2>&1 || echo "build=1" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
