@@ -105,6 +105,7 @@ jobs:
     needs: [check, linux-sdk]
     if: ${{ needs.check.outputs.build == '1' }}
     strategy:
+      fail-fast: false
       matrix:
         python-version: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
     steps:
@@ -142,6 +143,10 @@ jobs:
           sed -i 's/manylinux2014/manylinux_2_38/g' scripts/docker/linux-py-loongarch64 scripts/docker/config/pylinux-loongarch64.toml
           sed -i 's/aarch64/loongarch64/g' scripts/docker/linux-py-loongarch64 scripts/docker/config/pylinux-loongarch64.toml
           sed -i '/python -m pip install/i \python -m pip install -U pip' scripts/docker/linux-py-loongarch64
+
+          if [ "${{ matrix.python-version }}" = "3.9" ]; then
+            sed -i 's/setuptools==/# setuptools==/g' api/python/build-requirements.txt
+          fi
       - name: Python ${{ matrix.python-version }} -- Wheel
         env:
           PYTHON_VERSION: ${{ matrix.python-version }}
